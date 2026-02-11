@@ -49,9 +49,13 @@ def parse_datasets(config: Config) -> List[DatasetCtx]:
         samples_dir = run_dir / "samples"
         samples_dir.mkdir(parents=True, exist_ok=True)
         
-        # List sample IDs
+        # List sample IDs: subdirs (each with Frame_*.mp4) or flat Frame_*.mp4 in data_dir
         if data_dir.exists():
-            sample_ids = sorted([p.name for p in data_dir.iterdir() if p.is_dir()])
+            subdirs = sorted([p.name for p in data_dir.iterdir() if p.is_dir()])
+            if subdirs:
+                sample_ids = subdirs
+            else:
+                sample_ids = sorted([p.stem for p in data_dir.glob("Frame_*.mp4")])
         else:
             sample_ids = []
         
@@ -232,16 +236,20 @@ def create_app(config: Config) -> FastAPI:
             if q_len < config.server.max_queue:
                 sid = sample_ids[cur_idx]
                 s_dir = Path(ctx.data_dir) / sid
-                
+
                 # Skip if already done
                 if Path(done_marker_path(ctx.samples_dir, sid)).exists():
                     sample_status[sid] = 3
                     st["cur_idx"] += 1
                     time.sleep(0.01)
                     continue
-                
-                # Find video
-                mp4s = list(s_dir.glob("Frame_*.mp4"))
+
+                # Find video: subdir with Frame_*.mp4, or flat Frame_<sid>.mp4 in data_dir
+                if s_dir.is_dir():
+                    mp4s = list(s_dir.glob("Frame_*.mp4"))
+                else:
+                    flat_mp4 = Path(ctx.data_dir) / f"{sid}.mp4"
+                    mp4s = [flat_mp4] if flat_mp4.exists() else []
                 if not mp4s:
                     st["cur_idx"] += 1
                     time.sleep(0.01)
