@@ -74,3 +74,6 @@ htmlcov/
 tmp/
 temp/
 *.tmp
+video2tasks.code-workspace
+
+test/
