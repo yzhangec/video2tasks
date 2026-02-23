@@ -48,6 +48,18 @@ def run_worker(config: Config) -> None:
             "model_path": config.worker.qwen3vl.model_path,
             "device_map": config.worker.qwen3vl.device_map,
         }
+    elif config.worker.backend == "siliconflow":
+        backend_kwargs = {
+            "api_url": config.worker.siliconflow.api_url,
+            "api_key": config.worker.siliconflow.api_key,
+            "model_id": config.worker.siliconflow.model_id,
+            "target_width": config.worker.siliconflow.target_width,
+            "jpeg_quality": config.worker.siliconflow.jpeg_quality,
+            "temperature": config.worker.siliconflow.temperature,
+            "max_tokens": config.worker.siliconflow.max_tokens,
+            "timeout_sec": config.worker.siliconflow.timeout_sec,
+            "headers": config.worker.siliconflow.headers,
+        }
     elif config.worker.backend == "remote_api":
         backend_kwargs = {
             "url": config.worker.remote_api.api_url,

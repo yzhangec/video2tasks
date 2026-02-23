@@ -17,6 +17,11 @@ def create_backend(backend_type: str, **kwargs: Any) -> VLMBackend:
 
         return Qwen3VLBackend(**kwargs)
 
+    if backend_type == "siliconflow":
+        from .siliconflow import SiliconFlowBackend
+
+        return SiliconFlowBackend(**kwargs)
+
     backend_class = BACKENDS.get(backend_type)
     if backend_class is None:
         available = sorted(list(BACKENDS.keys()) + ["qwen3vl"])

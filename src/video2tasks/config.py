@@ -39,6 +39,23 @@ class Qwen3VLConfig(BaseModel):
     )
     device_map: str = Field(default="balanced", description="Device map strategy")
 
+class SiliconFlowConfig(BaseModel):
+    """SiliconFlow backend configuration."""
+    api_url: str = Field(
+        default="https://api.siliconflow.cn/v1/chat/completions",
+        description="SiliconFlow API URL"
+    )
+    api_key: str = Field(default="", description="API key for SiliconFlow")
+    model_id: str = Field(
+        default="Qwen/Qwen3-VL-8B-Instruct",
+        description="Model ID to use"
+    )
+    target_width: int = Field(default=640, description="Target image width for encoding")
+    jpeg_quality: int = Field(default=80, description="JPEG compression quality (0-100)")
+    temperature: float = Field(default=0.7, description="Sampling temperature")
+    max_tokens: int = Field(default=1024, description="Maximum tokens to generate")
+    timeout_sec: float = Field(default=60.0, description="Request timeout in seconds")
+    headers: dict = Field(default_factory=dict, description="Extra headers")
 
 class RemoteAPIConfig(BaseModel):
     """Remote API backend configuration."""
@@ -54,11 +71,12 @@ class WorkerConfig(BaseModel):
     backend: str = Field(default="dummy", description="VLM backend type")
     qwen3vl: Qwen3VLConfig = Field(default_factory=Qwen3VLConfig)
     remote_api: RemoteAPIConfig = Field(default_factory=RemoteAPIConfig)
+    siliconflow: SiliconFlowConfig = Field(default_factory=SiliconFlowConfig)  # 新增
 
     @field_validator("backend")
     @classmethod
     def validate_backend(cls, v: str) -> str:
-        allowed = ["dummy", "qwen3vl", "remote_api"]
+        allowed = ["dummy", "qwen3vl", "remote_api", "siliconflow"]
         if v not in allowed:
             raise ValueError(f"backend must be one of {allowed}, got {v}")
         return v
