@@ -1,10 +1,12 @@
 """FastAPI server for job queue management."""
 
+import base64
 import os
 import json
 import time
 import glob
 import threading
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +29,7 @@ class SubmitModel(BaseModel):
     vlm_json: Dict[str, Any] = Field(default_factory=dict)
     latency_s: float = 0.0
     meta: Dict[str, Any] = Field(default_factory=dict)
+    thumbnail_b64: Optional[str] = None  # optional thumbnail image (base64) to save under window_images/
 
 
 @dataclass
@@ -55,7 +58,8 @@ def parse_datasets(config: Config) -> List[DatasetCtx]:
             if subdirs:
                 sample_ids = subdirs
             else:
-                sample_ids = sorted([p.stem for p in data_dir.glob("Frame_*.mp4")])
+                # sample_ids = sorted([p.stem for p in data_dir.glob("Frame_*.mp4")])
+                sample_ids = sorted([p.stem for p in data_dir.glob("*.mp4")])
         else:
             sample_ids = []
         
@@ -85,6 +89,13 @@ def create_app(config: Config) -> FastAPI:
     inflight: Dict[str, Dict[str, Any]] = {}
     retry_counts: Dict[str, int] = {}
     
+    # Annotation timing: first_job_ts, last_result_ts, window_timings, sample_finished_at
+    timing_lock = threading.Lock()
+    first_job_ts: Optional[float] = None
+    last_result_ts: Optional[float] = None
+    window_timings: List[Dict[str, Any]] = []
+    sample_finished_at: Dict[str, float] = {}
+    
     # Per-sample locks
     _sample_locks: Dict[str, threading.Lock] = {}
     _sample_locks_lock = threading.Lock()
@@ -111,15 +122,20 @@ def create_app(config: Config) -> FastAPI:
     
     @app.get("/get_job")
     def get_job() -> Dict[str, Any]:
+        nonlocal first_job_ts
         with queue_lock:
             if not job_queue:
                 return {"status": "empty"}
             job = job_queue.pop(0)
             inflight[job["task_id"]] = {"ts": time.time(), "job": job}
-            return {"status": "ok", "data": job}
+        with timing_lock:
+            if first_job_ts is None:
+                first_job_ts = time.time()
+        return {"status": "ok", "data": job}
     
     @app.post("/submit_result")
     def submit_result(res: SubmitModel) -> Dict[str, str]:
+        nonlocal last_result_ts
         tid = res.task_id
         job_info = None
         
@@ -143,6 +159,19 @@ def create_app(config: Config) -> FastAPI:
         sid = str(res.meta.get("sample_id", "unknown"))
         w_id = res.meta.get("window_id")
         
+        # Record per-window annotation time and update last result timestamp
+        if job_info is not None:
+            elapsed_s = time.time() - job_info["ts"]
+            with timing_lock:
+                window_timings.append({
+                    "task_id": tid,
+                    "subset": subset,
+                    "sample_id": sid,
+                    "window_id": w_id,
+                    "elapsed_s": round(elapsed_s, 3),
+                })
+                last_result_ts = time.time()
+        
         samples_dir = samples_dir_by_subset.get(subset)
         if not samples_dir:
             samples_dir = str(Path(config.run.base_dir) / subset / config.run.run_id / "samples")
@@ -154,6 +183,16 @@ def create_app(config: Config) -> FastAPI:
         with get_sample_lock(sample_key):
             with open(windows_jsonl_path(samples_dir, sid), "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            # Save thumbnail next to windows.jsonl under window_images/{window_id}.png
+            if res.thumbnail_b64 and w_id is not None:
+                try:
+                    window_images_dir = Path(sample_out_dir(samples_dir, sid)) / "window_images"
+                    window_images_dir.mkdir(parents=True, exist_ok=True)
+                    thumb_path = window_images_dir / f"{w_id}.png"
+                    thumb_bytes = base64.b64decode(res.thumbnail_b64)
+                    thumb_path.write_bytes(thumb_bytes)
+                except Exception as e:
+                    print(f"[Warn] Failed to save window thumbnail {w_id}: {e}")
         
         return {"status": "received"}
     
@@ -209,7 +248,47 @@ def create_app(config: Config) -> FastAPI:
             # All datasets done
             if dataset_idx >= len(dataset_ctxs):
                 if config.server.auto_exit_after_all_done:
-                    print(f"[All Done] {global_done}/{progress_total}. Exiting.")
+                    # Build timing report and write log with timestamp to avoid overwrite
+                    with timing_lock:
+                        wt = list(window_timings)
+                        sfa = dict(sample_finished_at)
+                        fjt = first_job_ts
+                        lrt = last_result_ts
+                    total_annotation_s = sum(t["elapsed_s"] for t in wt)
+                    # Per-video: group by (subset, sample_id), sum elapsed_s, add completed_at
+                    sample_agg: Dict[str, Dict[str, Any]] = {}
+                    for t in wt:
+                        key = f"{t['subset']}::{t['sample_id']}"
+                        if key not in sample_agg:
+                            sample_agg[key] = {
+                                "subset": t["subset"],
+                                "sample_id": t["sample_id"],
+                                "total_elapsed_s": 0.0,
+                                "window_count": 0,
+                                "completed_at_ts": sfa.get(key),
+                            }
+                        sample_agg[key]["total_elapsed_s"] += t["elapsed_s"]
+                        sample_agg[key]["window_count"] += 1
+                    for v in sample_agg.values():
+                        v["total_elapsed_s"] = round(v["total_elapsed_s"], 3)
+                    report = {
+                        "per_window": wt,
+                        "per_video": list(sample_agg.values()),
+                        "global": {
+                            "first_job_ts": fjt,
+                            "last_result_ts": lrt,
+                            "total_wall_clock_s": round(lrt - fjt, 3) if (fjt is not None and lrt is not None) else None,
+                            "total_annotation_s": round(total_annotation_s, 3),
+                            "total_tasks": len(wt),
+                        },
+                    }
+                    log_dir = Path(config.run.base_dir)
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    log_path = log_dir / f"annotation_timings_{config.run.run_id}_{ts}.json"
+                    with open(log_path, "w", encoding="utf-8") as f:
+                        json.dump(report, f, indent=2, ensure_ascii=False)
+                    print(f"[All Done] {global_done}/{progress_total}. Timing log: {log_path}. Exiting.")
                     os._exit(0)
                 time.sleep(1.0)
                 continue
@@ -246,7 +325,8 @@ def create_app(config: Config) -> FastAPI:
 
                 # Find video: subdir with Frame_*.mp4, or flat Frame_<sid>.mp4 in data_dir
                 if s_dir.is_dir():
-                    mp4s = list(s_dir.glob("Frame_*.mp4"))
+                    # mp4s = list(s_dir.glob("Frame_*.mp4"))
+                    mp4s = list(s_dir.glob("*.mp4"))
                 else:
                     flat_mp4 = Path(ctx.data_dir) / f"{sid}.mp4"
                     mp4s = [flat_mp4] if flat_mp4.exists() else []
@@ -364,6 +444,8 @@ def create_app(config: Config) -> FastAPI:
                             done_path = done_marker_path(ctx.samples_dir, sid)
                             already_done = Path(done_path).exists()
                             Path(done_path).touch()
+                            with timing_lock:
+                                sample_finished_at[f"{ctx.subset}::{sid}"] = time.time()
                             
                             sample_status[sid] = 3
                             st["cur_idx"] += 1

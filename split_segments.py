@@ -129,11 +129,15 @@ def split_video_by_frames(
     return output_files
 
 
+VIDEO_FILE = "/home/eason/workspace/video2tasks/data/OpenGalaxea/output.mp4"
+SEGMENTS_JSON = "/home/eason/workspace/video2tasks/runs/OpenGalaxea/siliconflow_test/samples/output/segments.json"
+OUTPUT_DIR = "/home/eason/workspace/video2tasks/runs/OpenGalaxea/siliconflow_test/samples/output/segments"
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Split video by frame indices from segments.json")
-    parser.add_argument("-v", "--video", default="/home/eason/workspace/video2tasks/data/robocoin/Frame_2.mp4", help="Path to the source video file")
-    parser.add_argument("-s", "--segments_json", default="/home/eason/workspace/video2tasks/runs/robocoin/siliconflow_test/samples/Frame_2/segments.json", help="Path to segments.json")
-    parser.add_argument("-o", "--output_dir", default="/home/eason/workspace/video2tasks/runs/robocoin/siliconflow_test/samples/Frame_2",
+    parser.add_argument("-v", "--video", default=VIDEO_FILE, help="Path to the source video file")
+    parser.add_argument("-s", "--segments_json", default=SEGMENTS_JSON, help="Path to segments.json")
+    parser.add_argument("-o", "--output_dir", default=OUTPUT_DIR,
                         help="Output directory (default: <segments_json_dir>/segments)")
     args = parser.parse_args()
 

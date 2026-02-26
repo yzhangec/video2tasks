@@ -4,7 +4,7 @@ import time
 import json
 import base64
 from io import BytesIO
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import requests
 import numpy as np
@@ -33,6 +33,34 @@ def decode_b64_to_numpy(b64_str: str) -> Optional[np.ndarray]:
         rgb_array = np.array(img)
         bgr_array = rgb_array[:, :, ::-1]
         return bgr_array
+    except Exception:
+        return None
+
+
+def build_thumbnail_b64(images: List[np.ndarray], max_height: int = 120) -> Optional[str]:
+    """Build a horizontal strip thumbnail from BGR images and return base64 PNG."""
+    if not images:
+        return None
+    try:
+        # BGR -> RGB for PIL
+        thumbs = []
+        for img in images:
+            rgb = img[:, :, ::-1]
+            pil = Image.fromarray(rgb)
+            w, h = pil.size
+            new_h = min(max_height, h)
+            new_w = int(w * new_h / h) if h else w
+            pil = pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            thumbs.append(pil)
+        total_w = sum(p.size[0] for p in thumbs)
+        out = Image.new("RGB", (total_w, thumbs[0].size[1]))
+        x = 0
+        for p in thumbs:
+            out.paste(p, (x, 0))
+            x += p.size[0]
+        buf = BytesIO()
+        out.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
     except Exception:
         return None
 
@@ -144,16 +172,16 @@ def run_worker(config: Config) -> None:
                 else:
                     print(f"[Done] {task_id} ({len(images)}f) -> Cuts: {vlm_json.get('transitions', [])}")
                 
-                # Submit result
-                requests.post(
-                    f"{server_url}/submit_result",
-                    json={
-                        "task_id": task_id,
-                        "vlm_json": vlm_json,
-                        "meta": job["meta"]
-                    },
-                    timeout=30
-                )
+                # Build thumbnail for window_images/{window_id}.png (saved by server)
+                thumbnail_b64 = build_thumbnail_b64(images) if images else None
+                payload = {
+                    "task_id": task_id,
+                    "vlm_json": vlm_json,
+                    "meta": job["meta"]
+                }
+                if thumbnail_b64 is not None:
+                    payload["thumbnail_b64"] = thumbnail_b64
+                requests.post(f"{server_url}/submit_result", json=payload, timeout=30)
             
             except KeyboardInterrupt:
                 print("[Worker] Stopping...")

@@ -50,46 +50,46 @@ def extract_json(text: str) -> Dict[str, Any]:
     return {}
 
 
-def prompt_switch_detection(n_images: int) -> str:
-    """Generate prompt for switch detection."""
-    return (
-        f"You are a robotic vision analyzer watching a {n_images}-frame video clip of household manipulation tasks.\n"
-        f"**Mapping:** Image indices range from 0 to {n_images - 1}.\n\n"
+# def prompt_switch_detection(n_images: int) -> str:
+#     """Generate prompt for switch detection."""
+#     return (
+#         f"You are a robotic vision analyzer watching a {n_images}-frame video clip of household manipulation tasks.\n"
+#         f"**Mapping:** Image indices range from 0 to {n_images - 1}.\n\n"
         
-        "### Goal\n"
-        "Detect **Atomic Task Boundaries** (Switch Points).\n"
-        "A 'Switch' occurs strictly when the robot **completes** interaction with one object and **starts** interacting with a DIFFERENT object.\n\n"
+#         "### Goal\n"
+#         "Detect **Atomic Task Boundaries** (Switch Points).\n"
+#         "A 'Switch' occurs strictly when the robot **completes** interaction with one object and **starts** interacting with a DIFFERENT object.\n\n"
         
-        "### Core Logic (The 'Distinct Object' Rule)\n"
-        "1. **True Switch:** Robot releases Object A (e.g., a cup) and moves to grasp Object B (e.g., a spoon). -> MARK SWITCH.\n"
-        "2. **False Switch (IMPORTANT):** If the robot is manipulating different parts of the **SAME** object (e.g., folding sleeves then folding the body of the same shirt), this is **NOT** a switch. Treat it as one continuous task.\n"
-        "3. **Visual Similarity:** Be careful with objects of the same color. Only mark a switch if you clearly see the robot **physically separate** from the first item before touching the second.\n\n"
+#         "### Core Logic (The 'Distinct Object' Rule)\n"
+#         "1. **True Switch:** Robot releases Object A (e.g., a cup) and moves to grasp Object B (e.g., a spoon). -> MARK SWITCH.\n"
+#         "2. **False Switch (IMPORTANT):** If the robot is manipulating different parts of the **SAME** object (e.g., folding sleeves then folding the body of the same shirt), this is **NOT** a switch. Treat it as one continuous task.\n"
+#         "3. **Visual Similarity:** Be careful with objects of the same color. Only mark a switch if you clearly see the robot **physically separate** from the first item before touching the second.\n\n"
         
-        "### Output Format: Strict JSON\n"
-        "Your response must be a valid JSON object including a 'thought' field for step-by-step analysis, 'transitions' for the switch indices, and 'instructions' for the task labels.\n\n"
+#         "### Output Format: Strict JSON\n"
+#         "Your response must be a valid JSON object including a 'thought' field for step-by-step analysis, 'transitions' for the switch indices, and 'instructions' for the task labels.\n\n"
         
-        "### Representative Examples\n"
-        "**Example 1: Table Setting (True Switch)**\n"
-        "{\n"
-        '  "thought": "Frames 0-5: Robot places a fork. Frame 6: Hand releases fork and moves to the spoon. Frame 7: Hand grasps spoon. Switch detected at 6.",\n'
-        '  "transitions": [6],\n'
-        '  "instructions": ["Place the fork", "Place the spoon"]\n'
-        "}\n\n"
+#         "### Representative Examples\n"
+#         "**Example 1: Table Setting (True Switch)**\n"
+#         "{\n"
+#         '  "thought": "Frames 0-5: Robot places a fork. Frame 6: Hand releases fork and moves to the spoon. Frame 7: Hand grasps spoon. Switch detected at 6.",\n'
+#         '  "transitions": [6],\n'
+#         '  "instructions": ["Place the fork", "Place the spoon"]\n'
+#         "}\n\n"
         
-        "**Example 2: Folding Laundry (False Switch - Same Object)**\n"
-        "{\n"
-        '  "thought": "Frames 0-10: Robot folds the left sleeve of the black shirt. Frames 11-20: Robot folds the body of the **same** black shirt. Although the grasp changed, the object remains the same. The action is continuous.",\n'
-        '  "transitions": [],\n'
-        '  "instructions": ["Fold the black shirt"]\n'
-        "}\n\n"
+#         "**Example 2: Folding Laundry (False Switch - Same Object)**\n"
+#         "{\n"
+#         '  "thought": "Frames 0-10: Robot folds the left sleeve of the black shirt. Frames 11-20: Robot folds the body of the **same** black shirt. Although the grasp changed, the object remains the same. The action is continuous.",\n'
+#         '  "transitions": [],\n'
+#         '  "instructions": ["Fold the black shirt"]\n'
+#         "}\n\n"
         
-        "**Example 3: Cleaning (Continuous)**\n"
-        "{\n"
-        '  "thought": "Frames 0-15: Robot is wiping the counter. The motion is repetitive, but it is the same task. No switch.",\n'
-        '  "transitions": [],\n'
-        '  "instructions": ["Wipe the counter"]\n'
-        "}"
-    )
+#         "**Example 3: Cleaning (Continuous)**\n"
+#         "{\n"
+#         '  "thought": "Frames 0-15: Robot is wiping the counter. The motion is repetitive, but it is the same task. No switch.",\n'
+#         '  "transitions": [],\n'
+#         '  "instructions": ["Wipe the counter"]\n'
+#         "}"
+#     )
 
 
 class Qwen3VLBackend(VLMBackend):
