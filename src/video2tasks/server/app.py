@@ -116,6 +116,19 @@ def create_app(config: Config) -> FastAPI:
     
     def segments_path(samples_dir: str, sample_id: str) -> str:
         return str(Path(sample_out_dir(samples_dir, sample_id)) / "segments.json")
+
+    def get_vlm_model_name(cfg: Config) -> str:
+        """Get the VLM model name from config based on backend."""
+        b = cfg.worker.backend
+        if b == "dummy":
+            return "dummy"
+        if b == "qwen3vl":
+            return cfg.worker.qwen3vl.model_path
+        if b == "siliconflow":
+            return cfg.worker.siliconflow.model_id
+        if b == "remote_api":
+            return cfg.worker.remote_api.api_url or "remote_api"
+        return b
     
     def done_marker_path(samples_dir: str, sample_id: str) -> str:
         return str(Path(sample_out_dir(samples_dir, sample_id)) / ".DONE")
@@ -437,7 +450,9 @@ def create_app(config: Config) -> FastAPI:
                                 sid, windows, by_wid, fps, nframes,
                                 config.windowing.frames_per_window
                             )
-                            
+                            final_res["backend"] = config.worker.backend
+                            final_res["model"] = get_vlm_model_name(config)
+
                             with open(segments_path(ctx.samples_dir, sid), "w", encoding="utf-8") as f:
                                 json.dump(final_res, f, indent=2, ensure_ascii=False)
                             

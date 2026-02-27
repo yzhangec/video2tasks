@@ -1,13 +1,37 @@
+def prompt_label_segment(n_images: int) -> str:
+    """Prompt for labeling a single task segment with exactly one instruction."""
+    return (
+        f"You are a robotic vision analyzer watching a {n_images}-frame video clip.\n"
+        "The robot is performing exactly ONE atomic manipulation task throughout this entire clip.\n\n"
+        "Your job: describe this single task as a short imperative instruction.\n\n"
+        "### Object Description Rules\n"
+        "- Include **color** (e.g., 'red apple', 'yellow banana', 'green pear').\n"
+        "- Include **category/type** (e.g., apple, banana, plate, basket).\n"
+        "- Avoid vague terms like 'the object' or 'the item'.\n"
+        "- Example good instructions: 'Place the red apple on the white plate', "
+        "'Pick up the yellow banana from the basket'.\n\n"
+        "### Output Format: Strict JSON\n"
+        "Respond with ONLY a JSON object with two fields:\n"
+        '{"thought": "<one sentence observation>", "instruction": "<action instruction>"}\n\n'
+        "Example:\n"
+        '{"thought": "The robot picks up the red apple and places it on the white plate.", '
+        '"instruction": "Place the red apple on the white plate"}'
+    )
+
+
 def prompt_switch_detection(n_images: int) -> str:
     return (
         f"You are a robotic vision analyzer watching a {n_images}-frame video clip of household manipulation tasks.\n"
         f"**Mapping:** Image indices range from 0 to {n_images - 1}.\n\n"
         "### Goal\n"
         "Detect **Atomic Task Boundaries** (Switch Points).\n"
-        "A 'Switch' occurs strictly when the robot **completes** interaction with one object or **starts** interacting with a DIFFERENT object.\n\n"
+        # "A 'Switch' occurs strictly when the robot **completes** interaction with one object and **starts** interacting with a DIFFERENT object.\n\n"
+        "A 'Switch' occurs when:\n"
+        "1. The robot finishes interacting with the current object (its hand clearly releases the object and remains away from it for several frames), even if it does not immediately start a new object.\n"
+        "2. Or when the robot switches from one object to another (releases object A and starts interacting with object B).\n\n"
         "### Core Logic (The 'Distinct Object' Rule)\n"
         "1. **True Switch:** Robot releases Object A (e.g., a cup) and moves to grasp Object B (e.g., a spoon). -> MARK SWITCH.\n"
-        "2. **True Switch:** Robot releases Object A (e.g., a cup) -> MARK SWITCH.\n"
+        "2. **True Switch:** Robot releases Object A (e.g., a bottle) and idle for several frames. -> MARK SWITCH.\n"
         "3. **False Switch (IMPORTANT):** If the robot is manipulating different parts of the **SAME** object (e.g., folding sleeves then folding the body of the same shirt), this is **NOT** a switch. Treat it as one continuous task.\n"
         "4. **Visual Similarity:** Be careful with objects of the same color. Only mark a switch if you clearly see the robot **physically separate** from the first item before touching the second.\n\n"
         "### Hand Specification and Object Details\n"
@@ -17,6 +41,8 @@ def prompt_switch_detection(n_images: int) -> str:
         "Be **as specific as possible** about the manipulated object:\n"
         "- Include **color** (e.g., \"red apple\", \"yellow banana\", \"green pear\").\n"
         "- Include **category/type** (e.g., apple, banana, plate, basket, cup).\n"
+        "- Avoid using vague descriptions like \"the object\" or \"the item\". Always be specific.\n"
+        "- Avoid using numerical descriptions like \"the first object\" or \"the second object\". Always be specific.\n"
         "- When multiple similar objects exist, describe anything that helps to uniquely identify the object (e.g., position on the table, size).\n\n"
         "In your `instructions`, always refer to objects with this detailed description (e.g., \"Place the red apple on the plate\", not just \"Place the fruit\").\n\n"
         "### Output Format: Strict JSON\n"

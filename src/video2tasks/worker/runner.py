@@ -12,9 +12,11 @@ from PIL import Image
 
 from ..config import Config
 from ..vlm import create_backend
-from ..prompt import prompt_switch_detection
+from ..vlm.base import VLMBackend
+from ..prompt import prompt_switch_detection, prompt_label_segment
 
 MAX_LOCAL_RETRIES = 2
+MAX_RELABEL_RETRIES = 2
 
 
 def _is_empty_vlm_json(vlm_json: Optional[Dict[str, Any]]) -> bool:
@@ -63,6 +65,76 @@ def build_thumbnail_b64(images: List[np.ndarray], max_height: int = 120) -> Opti
         return base64.b64encode(buf.getvalue()).decode("ascii")
     except Exception:
         return None
+
+
+def _has_instruction_mismatch(vlm_json: Dict[str, Any]) -> bool:
+    """Return True when len(instructions) != len(transitions) + 1."""
+    transitions = vlm_json.get("transitions", [])
+    instructions = vlm_json.get("instructions", [])
+    return len(instructions) != len(transitions) + 1
+
+
+def _relabel_segments(
+    images: List[np.ndarray],
+    vlm_json: Dict[str, Any],
+    backend: VLMBackend,
+    task_id: str,
+) -> Dict[str, Any]:
+    """Fix a mismatch by re-labeling each segment independently.
+
+    The original transitions are kept as-is; only instructions are replaced.
+    Each segment [boundaries[i], boundaries[i+1]) is fed to the VLM with a
+    single-task labeling prompt to obtain one instruction per segment.
+    """
+    transitions = sorted(int(t) for t in vlm_json.get("transitions", []))
+    n = len(images)
+
+    # Build half-open segment boundaries: [0, t0, t1, ..., n]
+    boundaries = sorted(set([0] + transitions + [n]))
+    n_segments = len(boundaries) - 1
+
+    print(
+        f"[Fix] {task_id}: instruction mismatch "
+        f"(transitions={transitions}, "
+        f"instructions={vlm_json.get('instructions', [])}). "
+        f"Relabeling {n_segments} segment(s)."
+    )
+
+    new_instructions: List[str] = []
+    for i in range(n_segments):
+        s, e = boundaries[i], boundaries[i + 1]
+        seg_images = images[s:e]
+
+        if not seg_images:
+            new_instructions.append("Unknown")
+            continue
+
+        prompt = prompt_label_segment(len(seg_images))
+        seg_result: Dict[str, Any] = {}
+
+        for attempt in range(MAX_RELABEL_RETRIES):
+            try:
+                seg_result = backend.infer(seg_images, prompt)
+            except Exception as ex:
+                print(f"[Fix]   seg {i} inference error: {ex}")
+                seg_result = {}
+
+            if isinstance(seg_result, dict) and seg_result.get("instruction", "").strip():
+                break
+
+            print(f"[Fix]   seg {i} attempt {attempt + 1}/{MAX_RELABEL_RETRIES} empty, retrying...")
+
+        instruction = (seg_result.get("instruction") or "").strip()
+        if not instruction:
+            instruction = "Unknown"
+
+        new_instructions.append(instruction)
+        print(f"[Fix]   seg {i} frames [{s}, {e}): '{instruction}'")
+
+    fixed = dict(vlm_json)
+    fixed["instructions"] = new_instructions
+    fixed["_relabeled"] = True
+    return fixed
 
 
 def run_worker(config: Config) -> None:
@@ -170,7 +242,19 @@ def run_worker(config: Config) -> None:
                 if _is_empty_vlm_json(vlm_json):
                     print(f"[Fail] {task_id} Returning empty to trigger server retry")
                 else:
-                    print(f"[Done] {task_id} ({len(images)}f) -> Cuts: {vlm_json.get('transitions', [])}")
+                    # Fix instruction/transition count mismatch (len(instr) must be len(trans)+1)
+                    if _has_instruction_mismatch(vlm_json):
+                        print(f"[Fix] {task_id} Instruction/transition count mismatch")
+                        print(f"[Fix] {task_id} Original transitions: {vlm_json.get('transitions', [])}")
+                        vlm_json = _relabel_segments(images, vlm_json, backend, task_id)
+                        print(f"[Fix] {task_id} Relabeled segments: {vlm_json.get('instructions', [])}")
+
+                    print(
+                        f"[Done] {task_id} ({len(images)}f) "
+                        f"-> Cuts: {vlm_json.get('transitions', [])} "
+                        f"Instructions: {vlm_json.get('instructions', [])}"
+                        + (" [relabeled]" if vlm_json.get("_relabeled") else "")
+                    )
                 
                 # Build thumbnail for window_images/{window_id}.png (saved by server)
                 thumbnail_b64 = build_thumbnail_b64(images) if images else None

@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import glob
 import json
 import os
 import subprocess
@@ -129,23 +130,53 @@ def split_video_by_frames(
     return output_files
 
 
-VIDEO_FILE = "/home/eason/workspace/video2tasks/data/OpenGalaxea/output.mp4"
-SEGMENTS_JSON = "/home/eason/workspace/video2tasks/runs/OpenGalaxea/siliconflow_test/samples/output/segments.json"
-OUTPUT_DIR = "/home/eason/workspace/video2tasks/runs/OpenGalaxea/siliconflow_test/samples/output/segments"
+VIDEO_FILE = "/home/eason/workspace/video2tasks/data/test/Arrange_Fruits_20250819_011_epi000000.mp4"
+
+
+def find_segments_json(video_path: str) -> str:
+    """Find segments.json by searching runs/**/samples/<sample_id>/segments.json."""
+    sample_id = os.path.splitext(os.path.basename(video_path))[0]
+    workspace = os.path.dirname(os.path.abspath(__file__))
+    pattern = os.path.join(workspace, "runs", "**", "samples", sample_id, "segments.json")
+    matches = glob.glob(pattern, recursive=True)
+    if not matches:
+        raise FileNotFoundError(
+            f"No segments.json found for sample '{sample_id}' under {workspace}/runs/\n"
+            f"  (searched: {pattern})"
+        )
+    if len(matches) > 1:
+        matches.sort(key=os.path.getmtime, reverse=True)
+        print(f"[Warn] Multiple segments.json found, using newest:\n  {matches[0]}", file=sys.stderr)
+    return matches[0]
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Split video by frame indices from segments.json")
     parser.add_argument("-v", "--video", default=VIDEO_FILE, help="Path to the source video file")
-    parser.add_argument("-s", "--segments_json", default=SEGMENTS_JSON, help="Path to segments.json")
-    parser.add_argument("-o", "--output_dir", default=OUTPUT_DIR,
+    parser.add_argument("-s", "--segments_json", default=None,
+                        help="Path to segments.json (auto-detected from video name if omitted)")
+    parser.add_argument("-o", "--output_dir", default=None,
                         help="Output directory (default: <segments_json_dir>/segments)")
     args = parser.parse_args()
 
     if not os.path.isfile(args.video):
         print(f"Error: video not found: {args.video}", file=sys.stderr)
         sys.exit(1)
+
+    if args.segments_json is None:
+        try:
+            args.segments_json = find_segments_json(args.video)
+            print(f"[Auto] segments_json: {args.segments_json}")
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
     if not os.path.isfile(args.segments_json):
         print(f"Error: segments.json not found: {args.segments_json}", file=sys.stderr)
         sys.exit(1)
+
+    if args.output_dir is None:
+        args.output_dir = os.path.join(os.path.dirname(args.segments_json), "segments")
+        print(f"[Auto] output_dir:     {args.output_dir}")
 
     split_video_by_frames(args.video, args.segments_json, args.output_dir)
