@@ -18,9 +18,10 @@ import base64
 import json
 import os
 import sys
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 try:
     import yaml
@@ -28,6 +29,8 @@ try:
 except ImportError:
     _YAML_OK = False
 
+import cv2
+import numpy as np
 from PIL import Image, ImageDraw
 
 
@@ -129,6 +132,85 @@ def load_windows(windows_jsonl: Path) -> list[dict]:
                 windows.append(json.loads(line))
     windows.sort(key=lambda x: x.get("window_id", 0))
     return windows
+
+
+# ─────────────────────────────────────────────
+# Video / segment helpers
+# ─────────────────────────────────────────────
+
+def find_video(sample_id: str, config_path: Optional[Path]) -> Optional[Path]:
+    """Try to locate <sample_id>.mp4 from config datasets or by walking up the directory tree."""
+    candidates: List[Path] = []
+
+    # 1. Search dataset roots listed in config
+    if config_path and _YAML_OK:
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            for ds in cfg.get("datasets", []):
+                root = ds.get("root", "")
+                subset = ds.get("subset", "")
+                if root and subset:
+                    candidates.append(Path(root) / subset / f"{sample_id}.mp4")
+                if root:
+                    candidates.append(Path(root) / f"{sample_id}.mp4")
+        except Exception:
+            pass
+
+    # 2. Walk up from script dir
+    base = Path(__file__).parent
+    for sub in ("data", ".", "videos"):
+        candidates.append(base / sub / f"{sample_id}.mp4")
+
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def extract_segment_frames(
+    video_path: Path,
+    start_frame: int,
+    end_frame: int,
+    fps: float,
+    sample_fps: float = 1.0,
+    target_w: int = 320,
+    jpeg_quality: int = 75,
+) -> List[str]:
+    """Extract frames at ~sample_fps rate from [start_frame, end_frame) and return as JPEG data URLs."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return []
+
+    step = max(1, int(round(fps / sample_fps)))
+    frame_ids = list(range(start_frame, end_frame, step))
+    if not frame_ids:
+        frame_ids = [start_frame]
+
+    data_urls: List[str] = []
+    for fid in frame_ids:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
+        ok, bgr = cap.read()
+        if not ok or bgr is None:
+            continue
+        h, w = bgr.shape[:2]
+        if w != target_w:
+            target_h = int(h * target_w / w)
+            bgr = cv2.resize(bgr, (target_w, target_h), interpolation=cv2.INTER_AREA)
+        _, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+        b64 = base64.b64encode(buf).decode()
+        data_urls.append(f"data:image/jpeg;base64,{b64}")
+
+    cap.release()
+    return data_urls
+
+
+def load_segments_json(sample_dir: Path) -> Optional[dict]:
+    p = sample_dir / "segments.json"
+    if not p.exists():
+        return None
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
 
 
 # ─────────────────────────────────────────────
@@ -297,6 +379,78 @@ h1 {
     color: #445;
     font-style: italic;
 }
+/* ── Section headings ── */
+.section-heading {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #c0d8ff;
+    margin: 36px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #2a2f45;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.section-heading .sh-badge {
+    font-size: 0.72rem;
+    font-weight: 400;
+    background: #1e2840;
+    color: #7ab3f0;
+    padding: 2px 10px;
+    border-radius: 10px;
+}
+/* ── Segment cards ── */
+.seg-card {
+    background: #181c28;
+    border: 1px solid #252a3a;
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 18px;
+}
+.seg-header {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+.seg-id {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #a0c4ff;
+    min-width: 52px;
+}
+.seg-instr {
+    font-size: 0.92rem;
+    color: #7ed97e;
+    font-weight: 600;
+    flex: 1;
+}
+.seg-meta {
+    font-size: 0.72rem;
+    color: #445;
+    font-family: monospace;
+    white-space: nowrap;
+}
+.seg-strip {
+    display: flex;
+    gap: 3px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+}
+.seg-strip img {
+    height: 100px;
+    width: auto;
+    border-radius: 3px;
+    flex-shrink: 0;
+    display: block;
+}
+.seg-no-video {
+    font-size: 0.78rem;
+    color: #445;
+    font-style: italic;
+    padding: 8px 0;
+}
 """
 
 WINDOW_TEMPLATE = """
@@ -356,8 +510,82 @@ def build_model_bar(info: dict) -> str:
     return f'<div class="model-bar">{"".join(parts)}</div>'
 
 
+def build_segments_section(
+    sample_dir: Path,
+    video_path: Optional[Path],
+) -> str:
+    """Build the HTML for the Segments section from segments.json."""
+    seg_data = load_segments_json(sample_dir)
+    if seg_data is None:
+        return '<p class="seg-no-video">segments.json not found.</p>'
+
+    segments = seg_data.get("segments", [])
+    nframes_total = seg_data.get("nframes", 0)
+
+    # Read video fps once
+    fps = 30.0
+    if video_path:
+        cap = cv2.VideoCapture(str(video_path))
+        if cap.isOpened():
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+
+    # Metadata from segments.json (may override config)
+    seg_backend = seg_data.get("backend", "")
+    seg_model = seg_data.get("model", "")
+    meta_parts = [f"{len(segments)} segments", f"{nframes_total} frames total"]
+    if seg_backend:
+        meta_parts.append(f"backend: {seg_backend}")
+    if seg_model:
+        meta_parts.append(f"model: {seg_model}")
+
+    html_parts = [
+        f'<h2 class="section-heading">Segments <span class="sh-badge">{" · ".join(meta_parts)}</span></h2>'
+    ]
+
+    for seg in segments:
+        seg_id = seg["seg_id"]
+        start_f = seg["start_frame"]
+        end_f = seg["end_frame"]
+        instruction = seg.get("instruction", "")
+        duration_s = (end_f - start_f) / fps
+
+        # Extract 1fps frames
+        if video_path:
+            data_urls = extract_segment_frames(
+                video_path, start_f, end_f, fps,
+                sample_fps=1.0, target_w=320, jpeg_quality=75
+            )
+            n_samples = len(data_urls)
+            strip_html = "".join(
+                f'<img src="{url}" alt="seg {seg_id} frame" />'
+                for url in data_urls
+            )
+            strip_html = f'<div class="seg-strip">{strip_html}</div>'
+        else:
+            n_samples = 0
+            strip_html = '<p class="seg-no-video">No video found — pass --video to enable frame sampling.</p>'
+
+        meta_str = f"frames {start_f}–{end_f} · {duration_s:.1f}s · {n_samples} samples @ 1fps"
+
+        html_parts.append(f"""
+<div class="seg-card">
+  <div class="seg-header">
+    <span class="seg-id">Seg {seg_id}</span>
+    <span class="seg-instr">{instruction}</span>
+    <span class="seg-meta">{meta_str}</span>
+  </div>
+  {strip_html}
+</div>""")
+
+        print(f"  Seg {seg_id}: [{start_f}, {end_f}) {duration_s:.1f}s  '{instruction}'  ({n_samples} frames)")
+
+    return "\n".join(html_parts)
+
+
 def build_report(sample_dir: Path, out_path: Path, n_frames: int = 16,
-                 model_info: Optional[dict] = None) -> None:
+                 model_info: Optional[dict] = None,
+                 video_path: Optional[Path] = None) -> None:
     windows_jsonl = sample_dir / "windows.jsonl"
     img_dir = sample_dir / "window_images"
 
@@ -415,6 +643,10 @@ def build_report(sample_dir: Path, out_path: Path, n_frames: int = 16,
         cards_html.append(card)
         print(f"  Window {wid}: transitions={transitions}, instructions={len(instructions)}")
 
+    # ── Section 2: Segments ──
+    print("\nBuilding segments section...")
+    segments_html = build_segments_section(sample_dir, video_path)
+
     sample_name = sample_dir.name
     model_bar_html = build_model_bar(model_info or {})
     html = f"""<!DOCTYPE html>
@@ -429,7 +661,9 @@ def build_report(sample_dir: Path, out_path: Path, n_frames: int = 16,
   <h1>{sample_name}</h1>
   <p class="meta">Source: {sample_dir.resolve()} &nbsp;|&nbsp; Windows: {len(windows)}</p>
   {model_bar_html}
+  <h2 class="section-heading">Windows <span class="sh-badge">{len(windows)} windows</span></h2>
   {"".join(cards_html)}
+  {segments_html}
 </body>
 </html>"""
 
@@ -466,6 +700,11 @@ def main() -> None:
         default=None,
         help="Path to config.yaml (auto-detected if omitted)",
     )
+    parser.add_argument(
+        "--video",
+        default=None,
+        help="Path to source .mp4 (auto-detected from config datasets if omitted)",
+    )
     args = parser.parse_args()
 
     sample_dir = Path(args.sample_dir)
@@ -487,8 +726,24 @@ def main() -> None:
     else:
         n_frames = 16
 
-    out_path = Path(args.out) if args.out else sample_dir / "report.html"
-    build_report(sample_dir, out_path, n_frames=n_frames, model_info=model_info)
+    # Locate video for segment frame sampling
+    if args.video:
+        video_path = Path(args.video)
+        if not video_path.exists():
+            print(f"[Warn] Video not found: {video_path}", file=sys.stderr)
+            video_path = None
+    else:
+        sample_id = sample_dir.name
+        video_path = find_video(sample_id, config_path)
+        if video_path:
+            print(f"[Video] {video_path}")
+        else:
+            print("[Video] Not found — segments section will skip frame sampling.")
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = Path(args.out) if args.out else sample_dir / f"report_{ts}.html"
+    build_report(sample_dir, out_path, n_frames=n_frames, model_info=model_info,
+                 video_path=video_path)
 
 
 if __name__ == "__main__":
