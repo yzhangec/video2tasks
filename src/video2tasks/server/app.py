@@ -88,6 +88,9 @@ def create_app(config: Config) -> FastAPI:
     job_queue: List[Dict[str, Any]] = []
     inflight: Dict[str, Dict[str, Any]] = {}
     retry_counts: Dict[str, int] = {}
+    # Overview job tracking (sample_key -> bool/result)
+    overview_submitted: set = set()       # sample_keys with an overview job in-flight/done
+    overview_results: Dict[str, Dict[str, Any]] = {}  # sample_key -> vlm_json
     
     # Annotation timing: first_job_ts, last_result_ts, window_timings, sample_finished_at
     timing_lock = threading.Lock()
@@ -151,11 +154,11 @@ def create_app(config: Config) -> FastAPI:
         nonlocal last_result_ts
         tid = res.task_id
         job_info = None
-        
+
         with queue_lock:
             if tid in inflight:
                 job_info = inflight.pop(tid)
-        
+
         # Empty result: trigger retry
         if not res.vlm_json:
             if job_info:
@@ -167,12 +170,12 @@ def create_app(config: Config) -> FastAPI:
                     else:
                         print(f"[Err] Task {tid} failed max retries, dropping")
             return {"status": "retry_triggered"}
-        
+
         subset = str(res.meta.get("subset", dataset_ctxs[0].subset if dataset_ctxs else "default"))
         sid = str(res.meta.get("sample_id", "unknown"))
-        w_id = res.meta.get("window_id")
-        
-        # Record per-window annotation time and update last result timestamp
+        job_type = res.meta.get("job_type", "window")
+
+        # Record annotation timing
         if job_info is not None:
             elapsed_s = time.time() - job_info["ts"]
             with timing_lock:
@@ -180,18 +183,33 @@ def create_app(config: Config) -> FastAPI:
                     "task_id": tid,
                     "subset": subset,
                     "sample_id": sid,
-                    "window_id": w_id,
+                    "window_id": "overview" if job_type == "overview" else res.meta.get("window_id"),
                     "elapsed_s": round(elapsed_s, 3),
                 })
                 last_result_ts = time.time()
-        
+
+        # ── Overview job: store result, do NOT write to windows.jsonl ──
+        if job_type == "overview":
+            sample_key = f"{subset}::{sid}"
+            with queue_lock:
+                overview_results[sample_key] = res.vlm_json
+            print(
+                f"[Overview] {subset}/{sid}: "
+                f"task='{res.vlm_json.get('task_description', '')}' "
+                f"scene='{str(res.vlm_json.get('scene_description', ''))[:80]}'"
+            )
+            return {"status": "received"}
+
+        # ── Window job: append to windows.jsonl ──
+        w_id = res.meta.get("window_id")
+
         samples_dir = samples_dir_by_subset.get(subset)
         if not samples_dir:
             samples_dir = str(Path(config.run.base_dir) / subset / config.run.run_id / "samples")
             Path(samples_dir).mkdir(parents=True, exist_ok=True)
-        
+
         rec = {"task_id": tid, "window_id": w_id, "vlm_json": res.vlm_json}
-        
+
         sample_key = f"{subset}::{sid}"
         with get_sample_lock(sample_key):
             with open(windows_jsonl_path(samples_dir, sid), "a", encoding="utf-8") as f:
@@ -206,7 +224,7 @@ def create_app(config: Config) -> FastAPI:
                     thumb_path.write_bytes(thumb_bytes)
                 except Exception as e:
                     print(f"[Warn] Failed to save window thumbnail {w_id}: {e}")
-        
+
         return {"status": "received"}
     
     @app.get("/health")
@@ -350,72 +368,114 @@ def create_app(config: Config) -> FastAPI:
                 mp4 = str(mp4s[0])
                 
                 w_path = windows_jsonl_path(ctx.samples_dir, sid)
-                
-                # Step A: Generate window tasks
+                sample_key = f"{ctx.subset}::{sid}"
+
+                # Step A: Overview job (must complete before window jobs)
                 if sample_status[sid] == 0:
                     try:
                         fps, nframes = read_video_info(mp4)
-                        windows = build_windows(
-                            fps, nframes,
-                            config.windowing.window_sec,
-                            config.windowing.step_sec,
-                            config.windowing.frames_per_window
-                        )
-                        
-                        # Load completed windows
-                        done_wids = set()
-                        if Path(w_path).exists():
-                            with open(w_path, "r", encoding="utf-8") as f:
-                                for line in f:
-                                    try:
-                                        done_wids.add(json.loads(line)["window_id"])
-                                    except (json.JSONDecodeError, KeyError) as e:
-                                        print(f"[Warn] Corrupted line in {w_path}: {e}")
-                        
-                        with FrameExtractor(mp4) as extractor:
-                            cnt = 0
-                            
-                            for w in windows:
-                                if w.window_id in done_wids:
-                                    continue
-                                
-                                tid = f"{ctx.subset}::{sid}_w{w.window_id}"
-                                
-                                # Check if already active
-                                active = False
-                                with queue_lock:
-                                    if any(j["task_id"] == tid for j in job_queue) or tid in inflight:
-                                        active = True
-                                
-                                if active:
-                                    continue
-                                
-                                job = {
-                                    "task_id": tid,
-                                    "images": extractor.get_many_b64(
-                                        w.frame_ids,
+
+                        with queue_lock:
+                            ov_done = sample_key in overview_results
+                            ov_submitted = sample_key in overview_submitted
+
+                        if not ov_done:
+                            if not ov_submitted:
+                                # Sample frames uniformly across the full video
+                                n_ov = max(1, config.windowing.overview_frames)
+                                if n_ov == 1:
+                                    ov_fids = [nframes // 2]
+                                else:
+                                    import numpy as _np
+                                    ov_fids = [
+                                        int(round(i * (nframes - 1) / (n_ov - 1)))
+                                        for i in range(n_ov)
+                                    ]
+                                with FrameExtractor(mp4) as extractor:
+                                    ov_imgs = extractor.get_many_b64(
+                                        ov_fids,
                                         config.windowing.target_width,
                                         config.windowing.target_height,
-                                        config.windowing.png_compression
-                                    ),
+                                        config.windowing.png_compression,
+                                    )
+                                ov_job = {
+                                    "task_id": f"{ctx.subset}::{sid}_overview",
+                                    "images": ov_imgs,
                                     "meta": {
                                         "subset": ctx.subset,
                                         "sample_id": sid,
-                                        "window_id": w.window_id,
-                                        "frame_ids": w.frame_ids
-                                    }
+                                        "job_type": "overview",
+                                        "frame_ids": ov_fids,
+                                    },
                                 }
-                                
                                 with queue_lock:
-                                    job_queue.append(job)
-                                
-                                cnt += 1
-                                if cnt > 20:
-                                    break
-                        
-                        if cnt == 0:
-                            sample_status[sid] = 2
-                    
+                                    job_queue.append(ov_job)
+                                    overview_submitted.add(sample_key)
+                                print(f"[Overview] Queued overview job for {ctx.subset}/{sid} ({n_ov} frames)")
+                            # else: overview job already in-flight, just wait
+
+                        else:
+                            # Overview done — generate window jobs
+                            windows = build_windows(
+                                fps, nframes,
+                                config.windowing.window_sec,
+                                config.windowing.step_sec,
+                                config.windowing.frames_per_window,
+                            )
+
+                            # Load completed windows
+                            done_wids = set()
+                            if Path(w_path).exists():
+                                with open(w_path, "r", encoding="utf-8") as f:
+                                    for line in f:
+                                        try:
+                                            done_wids.add(json.loads(line)["window_id"])
+                                        except (json.JSONDecodeError, KeyError) as e:
+                                            print(f"[Warn] Corrupted line in {w_path}: {e}")
+
+                            with FrameExtractor(mp4) as extractor:
+                                cnt = 0
+
+                                for w in windows:
+                                    if w.window_id in done_wids:
+                                        continue
+
+                                    tid = f"{ctx.subset}::{sid}_w{w.window_id}"
+
+                                    active = False
+                                    with queue_lock:
+                                        if any(j["task_id"] == tid for j in job_queue) or tid in inflight:
+                                            active = True
+
+                                    if active:
+                                        continue
+
+                                    job = {
+                                        "task_id": tid,
+                                        "images": extractor.get_many_b64(
+                                            w.frame_ids,
+                                            config.windowing.target_width,
+                                            config.windowing.target_height,
+                                            config.windowing.png_compression,
+                                        ),
+                                        "meta": {
+                                            "subset": ctx.subset,
+                                            "sample_id": sid,
+                                            "window_id": w.window_id,
+                                            "frame_ids": w.frame_ids,
+                                        },
+                                    }
+
+                                    with queue_lock:
+                                        job_queue.append(job)
+
+                                    cnt += 1
+                                    if cnt > 20:
+                                        break
+
+                            if cnt == 0:
+                                sample_status[sid] = 2
+
                     except Exception as e:
                         print(f"[Err] {ctx.subset}/{sid}: {e}")
                         import traceback
@@ -445,13 +505,19 @@ def create_app(config: Config) -> FastAPI:
                         
                         if len(by_wid) >= len(windows):
                             print(f"[Finalize] {ctx.subset}/{sid}...")
-                            
+
                             final_res = build_segments_via_cuts(
                                 sid, windows, by_wid, fps, nframes,
                                 config.windowing.frames_per_window
                             )
                             final_res["backend"] = config.worker.backend
                             final_res["model"] = get_vlm_model_name(config)
+
+                            # Attach overview data if available
+                            with queue_lock:
+                                ov_data = overview_results.get(sample_key, {})
+                            final_res["task_description"] = ov_data.get("task_description", "")
+                            final_res["scene_description"] = ov_data.get("scene_description", "")
 
                             with open(segments_path(ctx.samples_dir, sid), "w", encoding="utf-8") as f:
                                 json.dump(final_res, f, indent=2, ensure_ascii=False)

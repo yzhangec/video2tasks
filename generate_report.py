@@ -451,6 +451,44 @@ h1 {
     font-style: italic;
     padding: 8px 0;
 }
+/* ── Overview card ── */
+.overview-card {
+    background: #141b2e;
+    border: 1px solid #1e3a60;
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin-bottom: 28px;
+}
+.overview-row {
+    margin-bottom: 14px;
+}
+.overview-row:last-child {
+    margin-bottom: 0;
+}
+.overview-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #445;
+    margin-bottom: 5px;
+}
+.overview-task {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #a8d8ff;
+    line-height: 1.45;
+}
+.overview-scene {
+    font-size: 0.86rem;
+    color: #b0b8c8;
+    line-height: 1.65;
+    background: #111420;
+    border-left: 3px solid #1e3a60;
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
 """
 
 WINDOW_TEMPLATE = """
@@ -510,12 +548,46 @@ def build_model_bar(info: dict) -> str:
     return f'<div class="model-bar">{"".join(parts)}</div>'
 
 
+def build_overview_section(seg_data: Optional[dict]) -> str:
+    """Build the HTML for the Overview section (task_description + scene_description)."""
+    if not seg_data:
+        return ""
+    task_desc = (seg_data.get("task_description") or "").strip()
+    scene_desc = (seg_data.get("scene_description") or "").strip()
+    if not task_desc and not scene_desc:
+        return ""
+
+    rows = []
+    if task_desc:
+        rows.append(
+            '<div class="overview-row">'
+            '<div class="overview-label">Task Description</div>'
+            f'<div class="overview-task">{task_desc}</div>'
+            "</div>"
+        )
+    if scene_desc:
+        rows.append(
+            '<div class="overview-row">'
+            '<div class="overview-label">Scene Description</div>'
+            f'<div class="overview-scene">{scene_desc}</div>'
+            "</div>"
+        )
+
+    inner = "\n".join(rows)
+    return (
+        '<h2 class="section-heading">Overview</h2>\n'
+        f'<div class="overview-card">{inner}</div>'
+    )
+
+
 def build_segments_section(
     sample_dir: Path,
     video_path: Optional[Path],
+    seg_data: Optional[dict] = None,
 ) -> str:
     """Build the HTML for the Segments section from segments.json."""
-    seg_data = load_segments_json(sample_dir)
+    if seg_data is None:
+        seg_data = load_segments_json(sample_dir)
     if seg_data is None:
         return '<p class="seg-no-video">segments.json not found.</p>'
 
@@ -643,9 +715,14 @@ def build_report(sample_dir: Path, out_path: Path, n_frames: int = 16,
         cards_html.append(card)
         print(f"  Window {wid}: transitions={transitions}, instructions={len(instructions)}")
 
-    # ── Section 2: Segments ──
-    print("\nBuilding segments section...")
-    segments_html = build_segments_section(sample_dir, video_path)
+    # ── Overview + Segments sections ──
+    seg_data = load_segments_json(sample_dir)
+
+    print("\nBuilding overview section...")
+    overview_html = build_overview_section(seg_data)
+
+    print("Building segments section...")
+    segments_html = build_segments_section(sample_dir, video_path, seg_data=seg_data)
 
     sample_name = sample_dir.name
     model_bar_html = build_model_bar(model_info or {})
@@ -661,6 +738,7 @@ def build_report(sample_dir: Path, out_path: Path, n_frames: int = 16,
   <h1>{sample_name}</h1>
   <p class="meta">Source: {sample_dir.resolve()} &nbsp;|&nbsp; Windows: {len(windows)}</p>
   {model_bar_html}
+  {overview_html}
   <h2 class="section-heading">Windows <span class="sh-badge">{len(windows)} windows</span></h2>
   {"".join(cards_html)}
   {segments_html}

@@ -13,7 +13,7 @@ from PIL import Image
 from ..config import Config
 from ..vlm import create_backend
 from ..vlm.base import VLMBackend
-from ..prompt import prompt_switch_detection, prompt_label_segment
+from ..prompt import prompt_switch_detection, prompt_label_segment, prompt_video_overview
 
 MAX_LOCAL_RETRIES = 2
 MAX_RELABEL_RETRIES = 2
@@ -212,6 +212,7 @@ def run_worker(config: Config) -> None:
                     time.sleep(1)
                     continue
                 task_id = job.get("task_id", "unknown")
+                job_type = job.get("meta", {}).get("job_type", "window")
                 
                 # Decode images
                 images_b64 = job.get("images", [])
@@ -224,51 +225,85 @@ def run_worker(config: Config) -> None:
                         # Create dummy image
                         images.append(np.zeros((224, 224, 3), dtype=np.uint8))
                 
-                # Run inference with proper prompt (local retry on empty output)
-                prompt = prompt_switch_detection(len(images))
-                vlm_json: Dict[str, Any] = {}
-                
-                for attempt in range(MAX_LOCAL_RETRIES):
-                    try:
-                        vlm_json = backend.infer(images, prompt)
-                    except Exception as e:
-                        print(f"[Err] Inference failed: {e}")
-                        vlm_json = {}
-                    
-                    if not _is_empty_vlm_json(vlm_json):
-                        break
-                    
-                    print(
-                        f"[Warn] {task_id} Empty VLM JSON "
-                        f"(attempt {attempt + 1}/{MAX_LOCAL_RETRIES})"
-                    )
-                
-                if _is_empty_vlm_json(vlm_json):
-                    print(f"[Fail] {task_id} Returning empty to trigger server retry")
-                else:
-                    # Fix instruction/transition count mismatch (len(instr) must be len(trans)+1)
-                    # if _has_instruction_mismatch(vlm_json):
-                    
-                    # Always relabel segments to ensure consistency
-                    vlm_json = _relabel_segments(images, vlm_json, backend, task_id)
+                if job_type == "overview":
+                    # ── Overview job: describe the full video ──────────────────
+                    prompt = prompt_video_overview(len(images))
+                    vlm_json: Dict[str, Any] = {}
 
-                    print(
-                        f"[Done] {task_id} ({len(images)}f) "
-                        f"-> Cuts: {vlm_json.get('transitions', [])} "
-                        f"Instructions: {vlm_json.get('instructions', [])}"
-                        + (" [relabeled]" if vlm_json.get("_relabeled") else "")
+                    for attempt in range(MAX_LOCAL_RETRIES):
+                        try:
+                            vlm_json = backend.infer(images, prompt)
+                        except Exception as e:
+                            print(f"[Err] Overview inference failed: {e}")
+                            vlm_json = {}
+
+                        if isinstance(vlm_json, dict) and vlm_json.get("task_description", "").strip():
+                            break
+
+                        print(
+                            f"[Warn] {task_id} Empty overview result "
+                            f"(attempt {attempt + 1}/{MAX_LOCAL_RETRIES})"
+                        )
+
+                    if isinstance(vlm_json, dict) and vlm_json.get("task_description", "").strip():
+                        print(
+                            f"[Overview] {task_id} "
+                            f"task='{vlm_json.get('task_description', '')}' "
+                            f"scene='{vlm_json.get('scene_description', '')[:80]}'"
+                        )
+                    else:
+                        print(f"[Fail] {task_id} overview empty, returning to trigger retry")
+                        vlm_json = {}
+
+                    requests.post(
+                        f"{server_url}/submit_result",
+                        json={"task_id": task_id, "vlm_json": vlm_json, "meta": job["meta"]},
+                        timeout=30,
                     )
-                
-                # Build thumbnail for window_images/{window_id}.png (saved by server)
-                thumbnail_b64 = build_thumbnail_b64(images) if images else None
-                payload = {
-                    "task_id": task_id,
-                    "vlm_json": vlm_json,
-                    "meta": job["meta"]
-                }
-                if thumbnail_b64 is not None:
-                    payload["thumbnail_b64"] = thumbnail_b64
-                requests.post(f"{server_url}/submit_result", json=payload, timeout=30)
+
+                else:
+                    # ── Window job: detect task boundaries ────────────────────
+                    prompt = prompt_switch_detection(len(images))
+                    vlm_json = {}
+
+                    for attempt in range(MAX_LOCAL_RETRIES):
+                        try:
+                            vlm_json = backend.infer(images, prompt)
+                        except Exception as e:
+                            print(f"[Err] Inference failed: {e}")
+                            vlm_json = {}
+
+                        if not _is_empty_vlm_json(vlm_json):
+                            break
+
+                        print(
+                            f"[Warn] {task_id} Empty VLM JSON "
+                            f"(attempt {attempt + 1}/{MAX_LOCAL_RETRIES})"
+                        )
+
+                    if _is_empty_vlm_json(vlm_json):
+                        print(f"[Fail] {task_id} Returning empty to trigger server retry")
+                    else:
+                        # Always relabel segments to ensure consistency
+                        vlm_json = _relabel_segments(images, vlm_json, backend, task_id)
+
+                        print(
+                            f"[Done] {task_id} ({len(images)}f) "
+                            f"-> Cuts: {vlm_json.get('transitions', [])} "
+                            f"Instructions: {vlm_json.get('instructions', [])}"
+                            # + (" [relabeled]" if vlm_json.get("_relabeled") else "")
+                        )
+
+                    # Build thumbnail for window_images/{window_id}.png (saved by server)
+                    thumbnail_b64 = build_thumbnail_b64(images) if images else None
+                    payload = {
+                        "task_id": task_id,
+                        "vlm_json": vlm_json,
+                        "meta": job["meta"],
+                    }
+                    if thumbnail_b64 is not None:
+                        payload["thumbnail_b64"] = thumbnail_b64
+                    requests.post(f"{server_url}/submit_result", json=payload, timeout=30)
             
             except KeyboardInterrupt:
                 print("[Worker] Stopping...")

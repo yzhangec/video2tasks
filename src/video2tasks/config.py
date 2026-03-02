@@ -87,6 +87,7 @@ class WindowingConfig(BaseModel):
     window_sec: float = Field(default=16.0, description="Window duration in seconds")
     step_sec: float = Field(default=8.0, description="Step size in seconds")
     frames_per_window: int = Field(default=16, description="Frames per window")
+    overview_frames: int = Field(default=16, description="Frames to sample for whole-video overview")
     target_width: int = Field(default=720, description="Target frame width")
     target_height: int = Field(default=480, description="Target frame height")
     png_compression: int = Field(default=0, description="PNG compression level (0-9)")
