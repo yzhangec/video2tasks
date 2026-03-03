@@ -10,7 +10,7 @@ Usage:
     python generate_report.py <sample_dir> [--out report.html]
 
     # Example:
-    python generate_report.py runs/test/siliconflow_test/samples/Arrange_Fruits_20250819_011_epi000000
+    python generate_report.py runs/test/openai_compat_test/samples/Arrange_Fruits_20250819_011_epi000000
 """
 
 import argparse
@@ -68,8 +68,8 @@ def load_model_info(config_path: Optional[Path]) -> dict:
         model = "unknown"
         if backend == "qwen3vl":
             model = worker.get("qwen3vl", {}).get("model_path", "unknown")
-        elif backend == "siliconflow":
-            sf = worker.get("siliconflow", {})
+        elif backend == "openai_compat":
+            sf = worker.get("openai_compat", {})
             model = sf.get("model_id", "unknown")
             api_url = sf.get("api_url", "")
         elif backend == "remote_api":
@@ -758,7 +758,7 @@ def main() -> None:
     parser.add_argument(
         "sample_dir",
         nargs="?",
-        default="runs/test/siliconflow_test/samples/Arrange_Fruits_20250819_011_epi000000",
+        default="runs/test/openai_compat_test/samples/Arrange_Fruits_20250819_011_epi000000",
         help="Path to the sample directory containing windows.jsonl and window_images/",
     )
     parser.add_argument(

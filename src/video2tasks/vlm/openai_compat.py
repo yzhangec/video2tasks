@@ -1,4 +1,4 @@
-"""SiliconFlow backend implementation."""
+"""OpenAI-compatible API backend implementation."""
 
 from typing import List, Dict, Any
 import json
@@ -59,8 +59,8 @@ def _extract_json(text: str) -> Dict[str, Any]:
     return {}
 
 
-class SiliconFlowBackend(VLMBackend):
-    """SiliconFlow backend using OpenAI-compatible API."""
+class OpenAICompatBackend(VLMBackend):
+    """OpenAI-compatible API backend for VLM inference."""
     
     def __init__(
         self,
@@ -88,14 +88,14 @@ class SiliconFlowBackend(VLMBackend):
     
     @property
     def name(self) -> str:
-        return "siliconflow"
+        return "openai_compat"
     
     def warmup(self) -> None:
         """Optional warmup - no model to load for API backend."""
-        print(f"[SiliconFlow] Backend ready (model: {self.model_id})")
+        print(f"[OpenAI] Backend ready (model: {self.model_id}), api_url: {self.api_url}")
     
     def infer(self, images: List[np.ndarray], prompt: str) -> Dict[str, Any]:
-        """Run inference with SiliconFlow API."""
+        """Run inference via OpenAI-compatible API."""
         if not images:
             return {}
         
@@ -125,7 +125,10 @@ class SiliconFlowBackend(VLMBackend):
                 }
             ],
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens
+            "max_tokens": self.max_tokens,
+            "thinking": {
+                "type": "disabled"
+            }
         }
         
         # Prepare headers
@@ -148,11 +151,11 @@ class SiliconFlowBackend(VLMBackend):
             response.raise_for_status()
             
             result = response.json()
-            # Extract content from OpenAI-compatible response
             content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             
             if not content:
-                print(f"[SiliconFlow] Empty response (latency_s={latency_s:.3f})")
+                print(f"[OpenAI] Empty response (latency_s={latency_s:.3f})")
+                print(f"[OpenAI] Response: {response.text}")
                 return {}
             
             # Extract JSON from content string
@@ -160,12 +163,12 @@ class SiliconFlowBackend(VLMBackend):
             return parsed
             
         except requests.exceptions.RequestException as e:
-            print(f"[SiliconFlow] Request failed: {e}")
+            print(f"[OpenAI] Request failed: {e}")
             return {}
         except (KeyError, IndexError, json.JSONDecodeError) as e:
-            print(f"[SiliconFlow] Failed to parse response: {e}")
+            print(f"[OpenAI] Failed to parse response: {e}")
             return {}
     
     def cleanup(self) -> None:
         """Optional cleanup - no resources to free for API backend."""
-        print("[SiliconFlow] Backend cleaned up.")
+        print("[OpenAI] Backend cleaned up.")

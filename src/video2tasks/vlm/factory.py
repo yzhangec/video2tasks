@@ -17,14 +17,14 @@ def create_backend(backend_type: str, **kwargs: Any) -> VLMBackend:
 
         return Qwen3VLBackend(**kwargs)
 
-    if backend_type == "siliconflow":
-        from .siliconflow import SiliconFlowBackend
+    if backend_type == "openai_compat":
+        from .openai_compat import OpenAICompatBackend
 
-        return SiliconFlowBackend(**kwargs)
+        return OpenAICompatBackend(**kwargs)
 
     backend_class = BACKENDS.get(backend_type)
     if backend_class is None:
-        available = sorted(list(BACKENDS.keys()) + ["qwen3vl"])
+        available = sorted(list(BACKENDS.keys()) + ["qwen3vl", "openai_compat"])
         raise ValueError(f"Unknown backend: {backend_type}. Available: {available}")
 
     return backend_class(**kwargs)

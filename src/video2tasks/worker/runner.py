@@ -152,17 +152,17 @@ def run_worker(config: Config) -> None:
             "model_path": config.worker.qwen3vl.model_path,
             "device_map": config.worker.qwen3vl.device_map,
         }
-    elif config.worker.backend == "siliconflow":
+    elif config.worker.backend == "openai_compat":
         backend_kwargs = {
-            "api_url": config.worker.siliconflow.api_url,
-            "api_key": config.worker.siliconflow.api_key,
-            "model_id": config.worker.siliconflow.model_id,
-            "target_width": config.worker.siliconflow.target_width,
-            "jpeg_quality": config.worker.siliconflow.jpeg_quality,
-            "temperature": config.worker.siliconflow.temperature,
-            "max_tokens": config.worker.siliconflow.max_tokens,
-            "timeout_sec": config.worker.siliconflow.timeout_sec,
-            "headers": config.worker.siliconflow.headers,
+            "api_url": config.worker.openai_compat.api_url,
+            "api_key": config.worker.openai_compat.api_key,
+            "model_id": config.worker.openai_compat.model_id,
+            "target_width": config.worker.openai_compat.target_width,
+            "jpeg_quality": config.worker.openai_compat.jpeg_quality,
+            "temperature": config.worker.openai_compat.temperature,
+            "max_tokens": config.worker.openai_compat.max_tokens,
+            "timeout_sec": config.worker.openai_compat.timeout_sec,
+            "headers": config.worker.openai_compat.headers,
         }
     elif config.worker.backend == "remote_api":
         backend_kwargs = {
@@ -249,7 +249,7 @@ def run_worker(config: Config) -> None:
                         print(
                             f"[Overview] {task_id} "
                             f"task='{vlm_json.get('task_description', '')}' "
-                            f"scene='{vlm_json.get('scene_description', '')[:80]}'"
+                            f"scene='{vlm_json.get('scene_description', '')}'"
                         )
                     else:
                         print(f"[Fail] {task_id} overview empty, returning to trigger retry")

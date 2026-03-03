@@ -127,8 +127,8 @@ def create_app(config: Config) -> FastAPI:
             return "dummy"
         if b == "qwen3vl":
             return cfg.worker.qwen3vl.model_path
-        if b == "siliconflow":
-            return cfg.worker.siliconflow.model_id
+        if b == "openai_compat":
+            return cfg.worker.openai_compat.model_id
         if b == "remote_api":
             return cfg.worker.remote_api.api_url or "remote_api"
         return b
@@ -196,7 +196,7 @@ def create_app(config: Config) -> FastAPI:
             print(
                 f"[Overview] {subset}/{sid}: "
                 f"task='{res.vlm_json.get('task_description', '')}' "
-                f"scene='{str(res.vlm_json.get('scene_description', ''))[:80]}'"
+                f"scene='{str(res.vlm_json.get('scene_description', ''))}'"
             )
             return {"status": "received"}
 

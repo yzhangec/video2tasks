@@ -39,13 +39,13 @@ class Qwen3VLConfig(BaseModel):
     )
     device_map: str = Field(default="balanced", description="Device map strategy")
 
-class SiliconFlowConfig(BaseModel):
-    """SiliconFlow backend configuration."""
+class OpenAICompatConfig(BaseModel):
+    """OpenAI-compatible API backend configuration."""
     api_url: str = Field(
         default="https://api.siliconflow.cn/v1/chat/completions",
-        description="SiliconFlow API URL"
+        description="OpenAI-compatible API URL"
     )
-    api_key: str = Field(default="", description="API key for SiliconFlow")
+    api_key: str = Field(default="", description="API key")
     model_id: str = Field(
         default="Qwen/Qwen3-VL-8B-Instruct",
         description="Model ID to use"
@@ -71,12 +71,12 @@ class WorkerConfig(BaseModel):
     backend: str = Field(default="dummy", description="VLM backend type")
     qwen3vl: Qwen3VLConfig = Field(default_factory=Qwen3VLConfig)
     remote_api: RemoteAPIConfig = Field(default_factory=RemoteAPIConfig)
-    siliconflow: SiliconFlowConfig = Field(default_factory=SiliconFlowConfig)  # 新增
+    openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
 
     @field_validator("backend")
     @classmethod
     def validate_backend(cls, v: str) -> str:
-        allowed = ["dummy", "qwen3vl", "remote_api", "siliconflow"]
+        allowed = ["dummy", "qwen3vl", "remote_api", "openai_compat"]
         if v not in allowed:
             raise ValueError(f"backend must be one of {allowed}, got {v}")
         return v
