@@ -189,6 +189,7 @@ def build_segments_via_cuts(
             for i in range(len(boundaries) - 1):
                 if i < len(instructions):
                     inst = str(instructions[i]).strip()
+                    # if inst and inst.lower() not in {"unknown", "no action"}:
                     if inst and inst.lower() != "unknown":
                         s_local, e_local = boundaries[i], boundaries[i + 1]
                         for k in range(s_local, e_local):
@@ -199,6 +200,56 @@ def build_segments_via_cuts(
         except (ValueError, IndexError):
             pass
     
+    # === Phase 2: Infer cuts from cross-window instruction changes ===
+    # When adjacent windows report different instructions but no explicit transition,
+    # the task switch happened somewhere in their overlap zone.  We add a low-weight
+    # candidate cut at the midpoint of that overlap so the clustering step can use it.
+    windows_sorted = sorted(windows, key=lambda w: w.window_id)
+    for i in range(1, len(windows_sorted)):
+        w_prev = windows_sorted[i - 1]
+        w_curr = windows_sorted[i]
+
+        rec_prev = by_wid.get(w_prev.window_id)
+        rec_curr = by_wid.get(w_curr.window_id)
+        if not rec_prev or not rec_curr:
+            continue
+
+        vlm_prev = rec_prev.get("vlm_json", {})
+        vlm_curr = rec_curr.get("vlm_json", {})
+
+        _skip = {"unknown", "no action"}
+        insts_prev = [s.strip() for s in vlm_prev.get("instructions", [])
+                      if s.strip() and s.strip().lower() not in _skip]
+        insts_curr = [s.strip() for s in vlm_curr.get("instructions", [])
+                      if s.strip() and s.strip().lower() not in _skip]
+
+        if not insts_prev or not insts_curr:
+            continue
+
+        # If w_curr already has explicit transitions, Phase 1 already placed cut
+        # points that cover its own task boundaries.  Adding an inferred cut at
+        # the entrance of w_curr would duplicate (and potentially conflict with)
+        # those explicit cuts, so we skip it.
+        if vlm_curr.get("transitions"):
+            continue
+
+        # Compare the last instruction of window i-1 with the first of window i.
+        # If they differ, a task boundary must lie in the overlap zone.
+        if insts_prev[-1] == insts_curr[0]:
+            continue
+
+        overlap_start = w_curr.start_frame
+        overlap_end = w_prev.end_frame
+
+        if overlap_start <= overlap_end:
+            # Place cut at the midpoint of the overlap zone.
+            cut_frame = (overlap_start + overlap_end) // 2
+        else:
+            # No overlap (step >= window); cut between the two windows.
+            cut_frame = (w_prev.end_frame + w_curr.start_frame) // 2
+
+        raw_cuts.append((cut_frame, 0.7))
+
     # Cluster cuts
     final_cut_points = [0]
     
